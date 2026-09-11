@@ -665,6 +665,29 @@ export interface RotatingFileSinkOptions extends Omit<FileSinkOptions, "lazy"> {
    * The maximum number of files to keep.  5 by default.
    */
   maxFiles?: number;
+
+  /**
+   * Generates a path for a rotated log file.  By default, appends a dot and
+   * the index to the original path (e.g., `app.log.1`).
+   *
+   * Paths are computed when the sink is created, before opening the file,
+   * and reused for subsequent rotations.  If this function throws, sink
+   * creation throws the same error, including in non-blocking mode.
+   * It is not called when `maxFiles` is zero or negative.
+   *
+   * The function must return the same path for the same arguments, including
+   * when recreating the sink.  Each index must refer to a different file,
+   * distinct from the active log file.  Parent directories must already exist
+   * and the filesystem must support renaming between the paths.
+   * Changing this function does not migrate or remove previously named backups.
+   *
+   * @param path The original log file path, as passed to the sink.
+   * @param index The backup index, starting at 1 for the newest backup.
+   * @returns The complete backup path.  Relative paths are relative to the
+   *          current working directory, not the original file's directory.
+   * @since 2.4.0
+   */
+  rotatedFilePath?: (path: string, index: number) => string;
 }
 
 /**
@@ -729,9 +752,11 @@ function isFileNotFoundError(error: unknown): boolean {
  * Get a platform-independent rotating file sink.
  *
  * This sink writes log records to a file, and rotates the file when it reaches
- * the `maxSize`.  The rotated files are named with the original file name
+ * the `maxSize`.  By default, rotated files are named with the original file name
  * followed by a dot and a number, starting from 1.  The number is incremented
  * for each rotation, and the maximum number of files to keep is `maxFiles`.
+ * The {@link RotatingFileSinkOptions.rotatedFilePath} option customizes the
+ * paths of rotated files.
  *
  * @param path A path to the file to write to.
  * @param options The options for the sink and the file driver.
@@ -762,6 +787,24 @@ export function getBaseRotatingFileSink<TFile>(
   if (maxFiles <= 0 && options.unlinkSync == null) {
     throw new TypeError("maxFiles <= 0 requires unlinkSync support.");
   }
+  // Finish all user callback calls before acquiring a file handle.
+  const rotation = maxFiles <= 0 ? null : (() => {
+    const rotatedFilePath = options.rotatedFilePath ??
+      ((path: string, index: number): string => `${path}.${index}`);
+    const paths = new Map<number, string>();
+    function getPath(index: number): string {
+      const cached = paths.get(index);
+      if (cached !== undefined) return cached;
+      const result = rotatedFilePath(path, index);
+      paths.set(index, result);
+      return result;
+    }
+    const backupTuples: [string, string][] = [];
+    for (let i = maxFiles - 1; i > 0; i--) {
+      backupTuples.push([getPath(i), getPath(i + 1)]);
+    }
+    return { backupTuples, activeDestination: getPath(1) };
+  })();
   let offset: number = 0;
   try {
     const stat = options.statSync(path);
@@ -777,7 +820,7 @@ export function getBaseRotatingFileSink<TFile>(
     return offset + bytes.length > maxSize;
   }
   function performRollover(): void {
-    if (maxFiles <= 0) {
+    if (rotation == null) {
       const unlinkSync = options.unlinkSync;
       if (unlinkSync == null) return;
 
@@ -802,16 +845,14 @@ export function getBaseRotatingFileSink<TFile>(
 
     options.closeSync(fd);
 
-    for (let i = maxFiles - 1; i > 0; i--) {
-      const oldPath = `${path}.${i}`;
-      const newPath = `${path}.${i + 1}`;
+    for (const [oldPath, newPath] of rotation.backupTuples) {
       try {
         options.renameSync(oldPath, newPath);
       } catch (_) {
         // Continue if the file does not exist.
       }
     }
-    options.renameSync(path, `${path}.1`);
+    options.renameSync(path, rotation.activeDestination);
     offset = 0;
     fd = options.openSync(path);
   }

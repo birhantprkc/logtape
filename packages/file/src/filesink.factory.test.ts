@@ -38,9 +38,14 @@ function checkFactory<TFile>(
   assert.deepStrictEqual(calls, []);
   for (const nonBlocking of [false, true]) {
     const options = { nonBlocking, bufferSize: 123, flushInterval: 0 };
+    const rotatingOptions = {
+      ...options,
+      rotatedFilePath: (path: string, index: number): string =>
+        `${path}-${index}`,
+    };
     assert.strictEqual(result.getFileSink("file.log", options), sink);
     assert.strictEqual(
-      result.getRotatingFileSink("rotating.log", options),
+      result.getRotatingFileSink("rotating.log", rotatingOptions),
       sink,
     );
     assert.strictEqual(
@@ -54,7 +59,7 @@ function checkFactory<TFile>(
       {
         kind: "rotating",
         path: "rotating.log",
-        options: { ...options, ...driver },
+        options: { ...rotatingOptions, ...driver },
       },
       {
         kind: "time",

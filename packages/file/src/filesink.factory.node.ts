@@ -129,9 +129,11 @@ export function createFileSinks(
    * Get a rotating file sink.
    *
    * This sink writes log records to a file, and rotates the file when it reaches
-   * the `maxSize`.  The rotated files are named with the original file name
+   * the `maxSize`.  By default, rotated files are named with the original file name
    * followed by a dot and a number, starting from 1.  The number is incremented
    * for each rotation, and the maximum number of files to keep is `maxFiles`.
+   * The {@link RotatingFileSinkOptions.rotatedFilePath} option customizes the
+   * paths of rotated files.
    *
    * Note that this function is unavailable in the browser.
    *
