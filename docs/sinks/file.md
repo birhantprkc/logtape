@@ -205,10 +205,17 @@ await configure({
 });
 ~~~~
 
-Rotated log files are named with a suffix like *.1*, *.2*, *.3*, and so on.
+By default, rotated log files are named with a suffix like *.1*, *.2*, *.3*,
+and so on.
 
 For more details, see `getRotatingFileSink()` function and
 `RotatingFileSinkOptions` interface in the API reference.
+
+Since LogTape 2.4.0, positive `~RotatingFileSinkOptions.maxFiles` values must be
+integers no greater than 1,000.  Larger values throw `RangeError` during sink
+creation, before any file is opened.  This limits the work and memory needed
+to compute and cache backup paths.  Zero or negative values still discard the
+active file on rotation without keeping backups.
 
 > [!TIP]
 > Like regular file sinks, rotating file sinks support buffering through the
@@ -222,6 +229,39 @@ For more details, see `getRotatingFileSink()` function and
 > [!NOTE]
 > On Deno, you need to have the `--allow-write` flag and the `--unstable-fs`
 > flag to use the rotating file sink.
+
+### Custom rotated file paths
+
+*This option is available since LogTape 2.4.0.*
+
+Use `~RotatingFileSinkOptions.rotatedFilePath` to choose the paths of rotated
+files.  For example, to keep the *.log* extension:
+
+~~~~ typescript twoslash
+import { getRotatingFileSink } from "@logtape/file";
+
+const sink = getRotatingFileSink("my-app.log", {
+  rotatedFilePath: (path, index) => path.replace(/(\.log)?$/, `.${index}$1`),
+});
+~~~~
+
+This produces *my-app.1.log*, *my-app.2.log*, and so on, instead of the default
+*my-app.log.1*, *my-app.log.2*.  The active file remains *my-app.log*.  This
+example also handles extensionless paths and preserves the directory.
+
+The callback receives the original path and a backup index starting at 1 for
+the newest backup.  Return a complete path; relative paths are relative to the
+current working directory, not the active file's directory.  The sink computes
+these paths when it is created, before opening the file, and reuses them for
+subsequent rotations.  A callback exception fails sink creation in both blocking
+and non-blocking modes.  The callback is not called when
+`~RotatingFileSinkOptions.maxFiles` is zero or negative.
+
+Return the same path for the same arguments, including when recreating the sink.
+Each backup must have a distinct path and must not refer to the active log file.
+Parent directories must already exist, and the filesystem must support renaming
+between the paths.  If you change the naming scheme, handle backups created
+under the previous scheme yourself; the sink does not migrate or remove them.
 
 
 Time-based rotating file sink

@@ -868,6 +868,308 @@ test("getRotatingFileSink()", () => {
   sink2[Symbol.dispose]();
 });
 
+for (const nonBlocking of [false, true]) {
+  for (const custom of [false, true]) {
+    for (const maxFiles of [1, 2]) {
+      test(`getRotatingFileSink() retains ${maxFiles} ${custom ? "custom" : "default"} backups with nonBlocking: ${nonBlocking}`, async () => {
+        const directory = fs.mkdtempSync(join(tmpdir(), "logtape.rotating-"));
+        const path = join(directory, "app.log");
+        const first = custom ? "app.1.log" : "app.log.1";
+        const second = custom ? "app.2.log" : "app.log.2";
+        try {
+          // Reuse existing backups and rotate past the retention limit.
+          fs.writeFileSync(path, "A\n");
+          fs.writeFileSync(join(directory, first), "B\n");
+          if (maxFiles === 2) fs.writeFileSync(join(directory, second), "C\n");
+          for (const payload of ["D\n", "E\n", "F\n"]) {
+            const sink = getRotatingFileSink(path, {
+              maxSize: 2,
+              maxFiles,
+              bufferSize: 0,
+              flushInterval: 0,
+              nonBlocking,
+              formatter: () => payload,
+              rotatedFilePath: custom
+                ? (path: string, index: number): string =>
+                  path.replace(/(\.log)?$/, `.${index}$1`)
+                : undefined,
+            });
+            try {
+              sink(info);
+            } finally {
+              if (nonBlocking) {
+                await (sink as unknown as Sink & AsyncDisposable)
+                  [Symbol.asyncDispose]();
+              } else {
+                sink[Symbol.dispose]();
+              }
+            }
+          }
+          assert.strictEqual(fs.readFileSync(path, "utf8"), "F\n");
+          assert.strictEqual(
+            fs.readFileSync(join(directory, first), "utf8"),
+            "E\n",
+          );
+          if (maxFiles === 2) {
+            assert.strictEqual(
+              fs.readFileSync(join(directory, second), "utf8"),
+              "D\n",
+            );
+          }
+          assert.deepStrictEqual(
+            fs.readdirSync(directory).sort(),
+            (maxFiles === 2 ? ["app.log", first, second] : ["app.log", first])
+              .sort(),
+          );
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
+  test(`getRotatingFileSink() rotates at the maxFiles upper bound with nonBlocking: ${nonBlocking}`, async () => {
+    const directory = fs.mkdtempSync(join(tmpdir(), "logtape-"));
+    const path = join(directory, "app.log");
+    try {
+      fs.writeFileSync(path, "A\n");
+      fs.writeFileSync(`${path}.999`, "B\n");
+      fs.writeFileSync(`${path}.1000`, "C\n");
+      const sink = getRotatingFileSink(path, {
+        maxFiles: 1000,
+        maxSize: 2,
+        bufferSize: 0,
+        flushInterval: 0,
+        nonBlocking,
+        formatter: () => "D\n",
+      });
+      try {
+        sink(info);
+      } finally {
+        if (nonBlocking) {
+          await (sink as unknown as Sink & AsyncDisposable)
+            [Symbol.asyncDispose]();
+        } else {
+          sink[Symbol.dispose]();
+        }
+      }
+      assert.strictEqual(fs.readFileSync(path, "utf8"), "D\n");
+      assert.strictEqual(fs.readFileSync(`${path}.1`, "utf8"), "A\n");
+      assert.strictEqual(fs.readFileSync(`${path}.1000`, "utf8"), "B\n");
+      assert.deepStrictEqual(fs.readdirSync(directory).sort(), [
+        "app.log",
+        "app.log.1",
+        "app.log.1000",
+      ]);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  for (const maxFiles of [0, -1, -Infinity]) {
+    test(`getRotatingFileSink() skips path generation with maxFiles: ${maxFiles}, nonBlocking: ${nonBlocking}`, async () => {
+      const directory = fs.mkdtempSync(join(tmpdir(), "logtape-"));
+      const path = join(directory, "app.log");
+      try {
+        for (const payload of ["A\n", "B\n", "C\n"]) {
+          const sink = getRotatingFileSink(path, {
+            maxSize: 2,
+            maxFiles,
+            bufferSize: 0,
+            flushInterval: 0,
+            nonBlocking,
+            formatter: () => payload,
+            rotatedFilePath: () => {
+              throw new Error("No backup path should be needed.");
+            },
+          });
+          try {
+            sink(info);
+          } finally {
+            if (nonBlocking) {
+              await (sink as unknown as Sink & AsyncDisposable)
+                [Symbol.asyncDispose]();
+            } else {
+              sink[Symbol.dispose]();
+            }
+          }
+        }
+        assert.strictEqual(fs.readFileSync(path, "utf8"), "C\n");
+        assert.deepStrictEqual(fs.readdirSync(directory), ["app.log"]);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    });
+  }
+
+  for (
+    const maxFiles of [
+      1001,
+      Number.MAX_SAFE_INTEGER,
+      Infinity,
+      2 ** 54,
+      Number.MAX_VALUE,
+      Number.MAX_SAFE_INTEGER + 1,
+      0.5,
+      1.5,
+    ]
+  ) {
+    test(`getBaseRotatingFileSink() rejects maxFiles: ${maxFiles} before side effects with nonBlocking: ${nonBlocking}`, () => {
+      assert.throws(() =>
+        getBaseRotatingFileSink("app.log", {
+          ...makeNodeRotatingFileDriver(),
+          maxFiles,
+          nonBlocking,
+          rotatedFilePath(): string {
+            assert.fail("Must reject before generating backup paths.");
+          },
+          statSync(): never {
+            assert.fail("Must reject before reading file metadata.");
+          },
+          openSync(): never {
+            assert.fail("Must reject before opening a file.");
+          },
+        }), { name: "RangeError", message: /maxFiles/ });
+    });
+  }
+
+  for (const existing of [false, true]) {
+    test(`getBaseRotatingFileSink() path errors precede file operations with existing: ${existing}, nonBlocking: ${nonBlocking}`, () => {
+      const directory = fs.mkdtempSync(join(tmpdir(), "logtape-"));
+      const path = join(directory, "app.log");
+      const failure = new Error("Cannot generate backup path.");
+      const operations: string[] = [];
+      const original = makeNodeRotatingFileDriver();
+      const driver = {
+        ...original,
+        openSync(path: string): number {
+          operations.push("open");
+          return original.openSync(path);
+        },
+        closeSync(fd: number): void {
+          operations.push("close");
+          original.closeSync(fd);
+        },
+        renameSync(oldPath: string, newPath: string): void {
+          operations.push("rename");
+          original.renameSync(oldPath, newPath);
+        },
+        unlinkSync(path: string): void {
+          operations.push("unlink");
+          fs.unlinkSync(path);
+        },
+      };
+      try {
+        if (existing) {
+          fs.writeFileSync(path, "active\n");
+          fs.writeFileSync(join(directory, "app.1.log"), "backup\n");
+        }
+        assert.throws(() =>
+          getBaseRotatingFileSink(path, {
+            ...driver,
+            maxFiles: 2,
+            nonBlocking,
+            rotatedFilePath(path: string, index: number): string {
+              if (index === 2) throw failure;
+              return path.replace(/(\.log)?$/, `.${index}$1`);
+            },
+          }), (error: unknown) => error === failure);
+        assert.deepStrictEqual(operations, []);
+        if (existing) {
+          assert.strictEqual(fs.readFileSync(path, "utf8"), "active\n");
+          assert.strictEqual(
+            fs.readFileSync(join(directory, "app.1.log"), "utf8"),
+            "backup\n",
+          );
+          assert.deepStrictEqual(fs.readdirSync(directory).sort(), [
+            "app.1.log",
+            "app.log",
+          ]);
+        } else {
+          assert.deepStrictEqual(fs.readdirSync(directory), []);
+        }
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    });
+  }
+
+  test(`getRotatingFileSink() caches custom paths before opening with nonBlocking: ${nonBlocking}`, async () => {
+    const directory = fs.mkdtempSync(join(tmpdir(), "logtape-"));
+    const path = `${directory}/./app.log`;
+    let constructing = true;
+    let generated = false;
+    let payload = "A\n";
+    try {
+      const sink = getRotatingFileSink(path, {
+        maxSize: 2,
+        maxFiles: 1,
+        bufferSize: 0,
+        flushInterval: 0,
+        nonBlocking,
+        formatter: () => payload,
+        rotatedFilePath(originalPath: string, index: number): string {
+          assert.ok(constructing);
+          assert.strictEqual(originalPath, path);
+          assert.strictEqual(fs.existsSync(path), false);
+          generated = true;
+          return originalPath.replace(/(\.log)?$/, `.${index}$1`);
+        },
+      });
+      constructing = false;
+      try {
+        assert.ok(generated);
+        sink(info);
+        payload = "B\n";
+        sink(info);
+      } finally {
+        if (nonBlocking) {
+          await (sink as unknown as Sink & AsyncDisposable)
+            [Symbol.asyncDispose]();
+        } else {
+          sink[Symbol.dispose]();
+        }
+      }
+      assert.strictEqual(fs.readFileSync(path, "utf8"), "B\n");
+      assert.strictEqual(
+        fs.readFileSync(join(directory, "app.1.log"), "utf8"),
+        "A\n",
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("getBaseRotatingFileSink() passes relative backup paths to the driver verbatim", () => {
+  const directory = fs.mkdtempSync(join(tmpdir(), "logtape-"));
+  const path = join(directory, "app.log");
+  const renames: [string, string][] = [];
+  try {
+    const sink = getBaseRotatingFileSink(path, {
+      ...makeNodeRotatingFileDriver(),
+      maxSize: 2,
+      maxFiles: 1,
+      bufferSize: 0,
+      flushInterval: 0,
+      formatter: () => "A\n",
+      rotatedFilePath: () => "archive.1.log",
+      renameSync(oldPath: string, newPath: string): void {
+        renames.push([oldPath, newPath]);
+      },
+    });
+    try {
+      sink(info);
+      sink(info);
+    } finally {
+      sink[Symbol.dispose]();
+    }
+    assert.deepStrictEqual(renames, [[path, "archive.1.log"]]);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("getRotatingFileSink() with maxFiles <= 0", () => {
   for (const maxFiles of [0, -1]) {
     const path = makeTempFileSync();

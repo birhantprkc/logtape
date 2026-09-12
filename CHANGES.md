@@ -44,6 +44,19 @@ To be released.
 
 [#212]: https://github.com/dahlia/logtape/pull/212
 
+### @logtape/file
+
+ -  Added the `rotatedFilePath` option to `getRotatingFileSink()` to customize
+    rotated log file paths, for example to keep the *.log* extension.
+    [[#215], [#216]]
+ -  Changed `getRotatingFileSink()` to reject positive `maxFiles` values unless
+    they are integers from 1 to 1,000, throwing `RangeError` during sink
+    creation. Update configurations outside this range before upgrading.  Zero
+    and negative values still disable backups.  [[#216]]
+
+[#215]: https://github.com/dahlia/logtape/issues/215
+[#216]: https://github.com/dahlia/logtape/pull/216
+
 ### @logtape/lint
 
  -  Added an opt-in `no-dynamic-message` rule to *@logtape/lint* for finding
