@@ -211,6 +211,12 @@ and so on.
 For more details, see `getRotatingFileSink()` function and
 `RotatingFileSinkOptions` interface in the API reference.
 
+Since LogTape 2.4.0, positive `~RotatingFileSinkOptions.maxFiles` values must be
+integers no greater than 1,000.  Larger values throw `RangeError` during sink
+creation, before any file is opened.  This limits the work and memory needed
+to compute and cache backup paths.  Zero or negative values still discard the
+active file on rotation without keeping backups.
+
 > [!TIP]
 > Like regular file sinks, rotating file sinks support buffering through the
 > `~FileSinkOptions.bufferSize` option (default: 8192 characters) and time-based

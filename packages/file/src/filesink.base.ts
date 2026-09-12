@@ -663,8 +663,9 @@ export interface RotatingFileSinkOptions extends Omit<FileSinkOptions, "lazy"> {
 
   /**
    * The maximum number of files to keep.  5 by default.
-   * Positive values must be safe integers; otherwise a {@link RangeError}
-   * is thrown.
+   * Positive values must be integers no greater than 1000; otherwise a
+   * {@link RangeError} is thrown.  This bounds the number of backup paths
+   * computed and cached during sink creation.
    */
   maxFiles?: number;
 
@@ -784,8 +785,8 @@ export function getBaseRotatingFileSink<TFile>(
   const encoder = options.encoder ?? new TextEncoder();
   const maxSize = options.maxSize ?? 1024 * 1024;
   const maxFiles = options.maxFiles ?? 5;
-  if (maxFiles > 0 && !Number.isSafeInteger(maxFiles)) {
-    throw new RangeError("Positive maxFiles must be a safe integer.");
+  if (maxFiles > 0 && (!Number.isSafeInteger(maxFiles) || maxFiles > 1000)) {
+    throw new RangeError("Positive maxFiles must be an integer at most 1000.");
   }
   const bufferSize = options.bufferSize ?? 1024 * 8; // Default buffer size of 8192 chars
   const flushInterval = options.flushInterval ?? 5000; // Default flush interval of 5 seconds

@@ -928,6 +928,44 @@ for (const nonBlocking of [false, true]) {
     }
   }
 
+  test(`getRotatingFileSink() rotates at the maxFiles upper bound with nonBlocking: ${nonBlocking}`, async () => {
+    const directory = fs.mkdtempSync(join(tmpdir(), "logtape-"));
+    const path = join(directory, "app.log");
+    try {
+      fs.writeFileSync(path, "A\n");
+      fs.writeFileSync(`${path}.999`, "B\n");
+      fs.writeFileSync(`${path}.1000`, "C\n");
+      const sink = getRotatingFileSink(path, {
+        maxFiles: 1000,
+        maxSize: 2,
+        bufferSize: 0,
+        flushInterval: 0,
+        nonBlocking,
+        formatter: () => "D\n",
+      });
+      try {
+        sink(info);
+      } finally {
+        if (nonBlocking) {
+          await (sink as unknown as Sink & AsyncDisposable)
+            [Symbol.asyncDispose]();
+        } else {
+          sink[Symbol.dispose]();
+        }
+      }
+      assert.strictEqual(fs.readFileSync(path, "utf8"), "D\n");
+      assert.strictEqual(fs.readFileSync(`${path}.1`, "utf8"), "A\n");
+      assert.strictEqual(fs.readFileSync(`${path}.1000`, "utf8"), "B\n");
+      assert.deepStrictEqual(fs.readdirSync(directory).sort(), [
+        "app.log",
+        "app.log.1",
+        "app.log.1000",
+      ]);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   for (const maxFiles of [0, -1, -Infinity]) {
     test(`getRotatingFileSink() skips path generation with maxFiles: ${maxFiles}, nonBlocking: ${nonBlocking}`, async () => {
       const directory = fs.mkdtempSync(join(tmpdir(), "logtape-"));
@@ -966,6 +1004,8 @@ for (const nonBlocking of [false, true]) {
 
   for (
     const maxFiles of [
+      1001,
+      Number.MAX_SAFE_INTEGER,
       Infinity,
       2 ** 54,
       Number.MAX_VALUE,
