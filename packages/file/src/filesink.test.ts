@@ -964,6 +964,24 @@ for (const nonBlocking of [false, true]) {
     });
   }
 
+  test(`getBaseRotatingFileSink() rejects infinite maxFiles before side effects with nonBlocking: ${nonBlocking}`, () => {
+    assert.throws(() =>
+      getBaseRotatingFileSink("app.log", {
+        ...makeNodeRotatingFileDriver(),
+        maxFiles: Infinity,
+        nonBlocking,
+        rotatedFilePath(): string {
+          assert.fail("Must reject before generating backup paths.");
+        },
+        statSync(): never {
+          assert.fail("Must reject before reading file metadata.");
+        },
+        openSync(): never {
+          assert.fail("Must reject before opening a file.");
+        },
+      }), { name: "RangeError", message: /maxFiles/ });
+  });
+
   for (const existing of [false, true]) {
     test(`getBaseRotatingFileSink() path errors precede file operations with existing: ${existing}, nonBlocking: ${nonBlocking}`, () => {
       const directory = fs.mkdtempSync(join(tmpdir(), "logtape-"));
